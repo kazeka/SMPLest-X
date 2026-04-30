@@ -41,7 +41,9 @@ def main():
     checkpoint_path = osp.join('./pretrained_models', args.ckpt_name, f'{args.ckpt_name}.pth.tar')
     img_folder = osp.join(root_dir, 'demo', 'input_frames', args.file_name)
     output_folder = osp.join(root_dir, 'demo', 'output_frames', args.file_name)
+    smplx_dir = osp.join(root_dir, 'demo', 'results', args.file_name, 'smplx')
     os.makedirs(output_folder, exist_ok=True)
+    os.makedirs(smplx_dir, exist_ok=True)
     exp_name = f'inference_{args.file_name}_{args.ckpt_name}_{time_str}'
 
     new_config = {
@@ -136,6 +138,14 @@ def main():
                 out = demoer.model(inputs, targets, meta_info, 'test')
 
             mesh = out['smplx_mesh_cam'].detach().cpu().numpy()[0]
+
+            # save shape parameters for downstream measurement
+            np.savez(
+                osp.join(smplx_dir, f'{int(frame):06d}_{bbox_id}.npz'),
+                betas=out['smplx_shape'].detach().cpu().numpy()[0],
+                cam_trans=out['cam_trans'].detach().cpu().numpy()[0],
+                vertices=mesh,
+            )
 
             # render mesh
             focal = [cfg.model.focal[0] / cfg.model.input_body_shape[1] * bbox[2], 
