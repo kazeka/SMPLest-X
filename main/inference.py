@@ -26,6 +26,11 @@ def parse_args():
     parser.add_argument('--start', type=str, default=1)
     parser.add_argument('--end', type=str, default=1)
     parser.add_argument('--multi_person', action='store_true')
+    parser.add_argument('--calibration_npz', type=str, default=None,
+                        help='Path to camera calibration .npz with keys K, dist, image_size. '
+                             'Required for ArUco marker 3D estimation.')
+    parser.add_argument('--assume_undistorted', action='store_true',
+                        help='Use K from calibration but set dist=zeros (frames already undistorted).')
     args = parser.parse_args()
     return args
 
@@ -68,9 +73,25 @@ def main():
     demoer._make_model()
 
     # init detector
-    bbox_model = getattr(cfg.inference.detection, "model_path", 
+    bbox_model = getattr(cfg.inference.detection, "model_path",
                         './pretrained_models/yolov8x.pt')
     detector = YOLO(bbox_model)
+
+    # load camera calibration (physical camera intrinsics for ArUco 3D estimation)
+    if args.calibration_npz:
+        _calib = np.load(args.calibration_npz)
+        camera_K    = _calib['K'].astype(np.float64)
+        camera_dist = np.zeros(5, dtype=np.float64) if args.assume_undistorted \
+                      else _calib['dist'].astype(np.float64)
+        demoer.logger.info(f"Loaded camera calibration from {args.calibration_npz}")
+    else:
+        camera_K    = np.zeros((3, 3), dtype=np.float64)
+        camera_dist = np.zeros(5, dtype=np.float64)
+
+    # init ArUco detector (opencv-contrib-python >= 4.7 required)
+    _aruco_dict   = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+    _aruco_params = cv2.aruco.DetectorParameters()
+    aruco_detector = cv2.aruco.ArucoDetector(_aruco_dict, _aruco_params)
 
     start = int(args.start)
     end = int(args.end) + 1
@@ -85,6 +106,16 @@ def main():
         vis_img = original_img.copy()
         original_img_height, original_img_width = original_img.shape[:2]
         
+        # ArUco detection — runs once per frame; saved to every per-person .npz for this frame
+        _gray = cv2.cvtColor(original_img, cv2.COLOR_RGB2GRAY)
+        _corners_raw, _ids_raw, _ = aruco_detector.detectMarkers(_gray)
+        if _ids_raw is not None:
+            marker_ids    = _ids_raw.flatten().astype(np.int32)
+            marker_corners = np.stack([c.squeeze(0) for c in _corners_raw])  # (N, 4, 2)
+        else:
+            marker_ids    = np.zeros((0,), dtype=np.int32)
+            marker_corners = np.zeros((0, 4, 2), dtype=np.float32)
+
         # detection, xyxy
         yolo_bbox = detector.predict(original_img, 
                                 device='cuda', 
@@ -139,19 +170,37 @@ def main():
 
             mesh = out['smplx_mesh_cam'].detach().cpu().numpy()[0]
 
+            # rendered (virtual) camera intrinsics, matched to the bbox crop
+            focal = [cfg.model.focal[0] / cfg.model.input_body_shape[1] * bbox[2],
+                     cfg.model.focal[1] / cfg.model.input_body_shape[0] * bbox[3]]
+            princpt = [cfg.model.princpt[0] / cfg.model.input_body_shape[1] * bbox[2] + bbox[0],
+                       cfg.model.princpt[1] / cfg.model.input_body_shape[0] * bbox[3] + bbox[1]]
+
             # save shape parameters for downstream measurement
+            # existing keys (betas, cam_trans, vertices) are unchanged — backward compatible
             np.savez(
                 osp.join(smplx_dir, f'{int(frame):06d}_{bbox_id}.npz'),
+                # --- existing (backward compatible) ---
                 betas=out['smplx_shape'].detach().cpu().numpy()[0],
                 cam_trans=out['cam_trans'].detach().cpu().numpy()[0],
                 vertices=mesh,
+                # --- pose params (needed for Path B optimizer initialization) ---
+                body_pose=out['smplx_body_pose'].detach().cpu().numpy()[0],
+                global_orient=out['smplx_root_pose'].detach().cpu().numpy()[0],
+                # --- rendered (virtual) camera, per-bbox ---
+                bbox=bbox,
+                bbox_xyxy=yolo_bbox[bbox_id],
+                focal=np.array(focal),
+                princpt=np.array(princpt),
+                # --- physical camera calibration (metric; zeros if not provided) ---
+                camera_K=camera_K,
+                camera_dist=camera_dist,
+                # --- ArUco markers detected in this frame ---
+                markers_ids=marker_ids,
+                markers_corners=marker_corners,
+                # --- provenance ---
+                img_shape=np.array(original_img.shape[:2]),
             )
-
-            # render mesh
-            focal = [cfg.model.focal[0] / cfg.model.input_body_shape[1] * bbox[2], 
-                     cfg.model.focal[1] / cfg.model.input_body_shape[0] * bbox[3]]
-            princpt = [cfg.model.princpt[0] / cfg.model.input_body_shape[1] * bbox[2] + bbox[0], 
-                       cfg.model.princpt[1] / cfg.model.input_body_shape[0] * bbox[3] + bbox[1]]
             
             # draw the bbox on img
             vis_img = cv2.rectangle(vis_img, (int(yolo_bbox[bbox_id][0]), int(yolo_bbox[bbox_id][1])), 
