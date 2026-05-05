@@ -107,8 +107,8 @@ def main():
         original_img_height, original_img_width = original_img.shape[:2]
         
         # ArUco detection — runs once per frame; saved to every per-person .npz for this frame
-        _gray = cv2.cvtColor(original_img, cv2.COLOR_RGB2GRAY)
-        _corners_raw, _ids_raw, _ = aruco_detector.detectMarkers(_gray)
+        # load_img returns float32; ArUco requires uint8 and handles grayscale internally
+        _corners_raw, _ids_raw, _ = aruco_detector.detectMarkers(original_img.astype(np.uint8))
         if _ids_raw is not None:
             marker_ids    = _ids_raw.flatten().astype(np.int32)
             marker_corners = np.stack([c.squeeze(0) for c in _corners_raw])  # (N, 4, 2)
