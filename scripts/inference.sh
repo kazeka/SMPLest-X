@@ -35,12 +35,14 @@ python main/inference.py \
     --file_name $NAME \
     --ckpt_name $CKPT_NAME \
     --end $END_COUNT \
+    --calibration_npz ../calib/p50pro_front_08.npz
+
 
 
 # convert frames to video
 case "$EXT" in
     mp4|avi|mov|mkv|flv|wmv|webm|mpeg|mpg)
-        ffmpeg -y -f image2 -r ${FPS} -i ${OUTPUT_PATH}/%06d.jpg -vcodec mjpeg -qscale 0 -pix_fmt yuv420p ./demo/result_${NAME}.mp4
+        ffmpeg -y -f image2 -r ${FPS} -i ${OUTPUT_PATH}/%06d.jpg -c:v libx264 -crf 18 -pix_fmt yuv420p ./demo/result_${NAME}.mp4
         ;;
     jpg|jpeg|png|bmp|gif|tiff|tif|webp|svg)
         cp $OUTPUT_PATH/000001.$EXT ./demo/result_$FILE_NAME
@@ -52,4 +54,3 @@ esac
 
 rm -rf ./demo/input_frames
 rm -rf ./demo/output_frames
-
