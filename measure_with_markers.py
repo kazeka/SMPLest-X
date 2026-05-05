@@ -7,8 +7,9 @@ Slice heights come from markers when detected reliably (>=2 of 4 per band),
 and fall back to joint-derived heights on a per-band basis. Both are always
 printed for comparison, enabling a direct marker vs. markerless evaluation.
 
-Requires inference.py to have been run with --calibration_npz so that the
-per-frame .npz files contain non-zero camera_K fields.
+Requires inference.py (updated) to have been run so that the per-frame .npz
+files contain focal, princpt, vertices, global_orient, markers_ids,
+markers_corners. No physical camera calibration file is required.
 
 Usage:
     python measure_with_markers.py demo/results/myvideo/ \\
@@ -16,7 +17,6 @@ Usage:
 
     python measure_with_markers.py demo/results/myvideo/ \\
         --garment_config garment_v1.json \\
-        --calibration_npz p50pro_main_12MP.npz \\
         --ground_truth 1815,1070,990,1040,470,1400
 """
 
@@ -43,53 +43,37 @@ from measure_bodies import (
 
 
 # ---------------------------------------------------------------------------
-# ArUco marker 3D estimation
+# Marker position recovery
 # ---------------------------------------------------------------------------
 
-def _marker_object_points(size_mm: float) -> np.ndarray:
-    """4 object-space corners of a square marker in marker-local coords (metres).
-
-    OpenCV ArUco corner order: top-left, top-right, bottom-right, bottom-left.
-    Marker frame: origin at centre, +X right, +Y down, +Z out of marker plane.
-    """
-    half = size_mm / 2000.0
-    return np.array([
-        [-half, -half, 0.0],
-        [+half, -half, 0.0],
-        [+half, +half, 0.0],
-        [-half, +half, 0.0],
-    ], dtype=np.float32)
-
-
-def marker_centre_camera_frame(
+def marker_body_local_from_mesh(
     corners_2d: np.ndarray,
-    marker_size_mm: float,
-    K: np.ndarray,
-    dist: np.ndarray,
-) -> np.ndarray | None:
-    """Return marker centre 3D position in camera frame (metres), or None on failure."""
-    obj_pts = _marker_object_points(marker_size_mm)
-    success, _, tvec = cv2.solvePnP(
-        obj_pts, corners_2d.astype(np.float32), K, dist,
-        flags=cv2.SOLVEPNP_IPPE_SQUARE,
-    )
-    if not success:
-        return None
-    return tvec.flatten()  # marker origin is its centre
-
-
-def transform_camera_to_smplx_local(
-    point_cam: np.ndarray,
-    smplx_global_orient: np.ndarray,
-    smplx_cam_trans: np.ndarray,
+    vertices_cam: np.ndarray,
+    u_verts: np.ndarray,
+    v_verts: np.ndarray,
+    R_global: np.ndarray,
+    cam_trans: np.ndarray,
 ) -> np.ndarray:
-    """Convert a 3D point from camera frame to SMPL-X body-local frame.
+    """Return the body-local 3D position of a marker via the nearest mesh vertex.
 
-    Body-to-camera: x_cam = R_global @ x_body + cam_trans
-    Camera-to-body: x_body = R_global.T @ (x_cam - cam_trans)
+    The SMPLest-X forward pass is v_cam = R_global @ v_body + cam_trans, so the
+    exact inverse R_global.T @ (v_cam - cam_trans) = v_body. By projecting all
+    saved mesh vertices to image space and picking the one nearest to the marker
+    centre, we obtain the correct camera-space depth for that surface point —
+    avoiding the incorrect assumption that every marker sits at cam_trans[2]
+    depth (which varies with the virtual focal scale and is not the marker depth).
+
+    u_verts / v_verts are the pre-projected vertex image coordinates, computed
+    once per frame and shared across all markers in that frame.
+
+    Body-local Y from the posed mesh ≈ T-pose body-local Y for trunk landmarks
+    (error < 15 mm for normal standing poses with small spine rotation).
     """
-    R_global, _ = cv2.Rodrigues(np.array(smplx_global_orient, dtype=np.float64).reshape(3, 1))
-    return R_global.T @ (point_cam.astype(np.float64) - smplx_cam_trans.astype(np.float64))
+    u, v = corners_2d.mean(axis=0)
+    dist2 = (u_verts - u) ** 2 + (v_verts - v) ** 2
+    idx = int(np.argmin(dist2))
+    v_cam = vertices_cam[idx].astype(np.float64)
+    return R_global.T @ (v_cam - cam_trans.astype(np.float64))
 
 
 # ---------------------------------------------------------------------------
@@ -109,27 +93,31 @@ def aggregate_markers_in_body_frame(
     positions_per_id: dict[int, list[np.ndarray]] = {}
 
     for frame_data in per_frame_data:
-        ids      = frame_data['markers_ids']
-        corners  = frame_data['markers_corners']
-        K        = frame_data['camera_K']
-        dist     = frame_data['camera_dist']
-        cam_trans       = frame_data['cam_trans']
-        global_orient   = frame_data['global_orient']
+        ids           = frame_data['markers_ids']
+        corners       = frame_data['markers_corners']
+        focal         = frame_data['focal']
+        princpt       = frame_data['princpt']
+        cam_trans     = frame_data['cam_trans']
+        global_orient = frame_data['global_orient']
+        vertices      = frame_data['vertices']
 
-        if np.all(K == 0):
-            continue  # no calibration for this frame
+        if focal[0] == 0 or vertices.shape[0] == 0 or len(ids) == 0:
+            continue
+
+        # Project all mesh vertices to image space once per frame (shared across markers)
+        z_v = vertices[:, 2].astype(np.float64)
+        u_v = focal[0] * vertices[:, 0].astype(np.float64) / z_v + princpt[0]
+        v_v = focal[1] * vertices[:, 1].astype(np.float64) / z_v + princpt[1]
+        R_global, _ = cv2.Rodrigues(global_orient.astype(np.float64).reshape(3, 1))
 
         for idx in range(len(ids)):
             mid = int(ids[idx])
             if str(mid) not in garment_config['markers']:
                 continue
 
-            size_mm = garment_config['markers'][str(mid)]['size_mm']
-            centre_cam = marker_centre_camera_frame(corners[idx], size_mm, K, dist)
-            if centre_cam is None:
-                continue
-
-            centre_body = transform_camera_to_smplx_local(centre_cam, global_orient, cam_trans)
+            centre_body = marker_body_local_from_mesh(
+                corners[idx], vertices, u_v, v_v, R_global, cam_trans
+            )
             positions_per_id.setdefault(mid, []).append(centre_body)
 
     aggregated: dict[int, np.ndarray] = {}
@@ -180,18 +168,17 @@ def slice_heights_from_markers(
 # I/O helpers
 # ---------------------------------------------------------------------------
 
-def load_frame_data(path: str, K_override: np.ndarray | None, dist_override: np.ndarray | None) -> dict:
+def load_frame_data(path: str) -> dict:
     data = dict(np.load(path, allow_pickle=False))
-    K    = K_override    if K_override    is not None else data.get('camera_K',    np.zeros((3, 3)))
-    dist = dist_override if dist_override is not None else data.get('camera_dist', np.zeros(5))
     return {
-        'betas':          data['betas'].reshape(10).astype(np.float32),
-        'cam_trans':      data.get('cam_trans',       np.zeros(3)).astype(np.float64),
-        'global_orient':  data.get('global_orient',   np.zeros(3)).astype(np.float64),
-        'markers_ids':    data.get('markers_ids',     np.zeros((0,), dtype=np.int32)),
-        'markers_corners':data.get('markers_corners', np.zeros((0, 4, 2), dtype=np.float32)),
-        'camera_K':       K.astype(np.float64),
-        'camera_dist':    dist.astype(np.float64),
+        'betas':           data['betas'].reshape(10).astype(np.float32),
+        'cam_trans':       data.get('cam_trans',       np.zeros(3)).astype(np.float64),
+        'global_orient':   data.get('global_orient',   np.zeros(3)).astype(np.float64),
+        'vertices':        data.get('vertices',        np.zeros((0, 3), dtype=np.float32)).astype(np.float32),
+        'focal':           data.get('focal',           np.zeros(2)).astype(np.float64),
+        'princpt':         data.get('princpt',         np.zeros(2)).astype(np.float64),
+        'markers_ids':     data.get('markers_ids',     np.zeros((0,), dtype=np.int32)),
+        'markers_corners': data.get('markers_corners', np.zeros((0, 4, 2), dtype=np.float32)),
     }
 
 
@@ -225,7 +212,8 @@ def main() -> None:
     parser.add_argument('--garment_config', required=True,
                         help='Path to garment layout JSON (e.g. garment_v1.json)')
     parser.add_argument('--calibration_npz', default=None,
-                        help='Camera calibration .npz with keys K, dist. Override for per-npz camera_K.')
+                        help='(Unused — kept for CLI compatibility. Marker 3D estimation now uses '
+                             'mesh vertices and virtual camera intrinsics saved in each .npz.)')
     _repo_root = os.path.dirname(os.path.abspath(__file__))
     parser.add_argument('--model_path',
                         default=os.path.join(_repo_root, 'human_models', 'human_model_files'))
@@ -252,13 +240,6 @@ def main() -> None:
     with open(args.garment_config) as f:
         garment_config = json.load(f)
 
-    # calibration override
-    K_override = dist_override = None
-    if args.calibration_npz:
-        _calib = np.load(args.calibration_npz)
-        K_override    = _calib['K'].astype(np.float64)
-        dist_override = np.zeros(5, dtype=np.float64)  # assume pre-undistorted
-
     # discover .npz files
     smplx_dir = os.path.join(args.results_dir, 'smplx')
     npz_files = sorted(glob.glob(os.path.join(smplx_dir, '*.npz')))
@@ -278,23 +259,26 @@ def main() -> None:
     per_frame_data: list[dict] = []
     all_betas: list[np.ndarray] = []
     for path in tqdm(npz_files, desc='Loading .npz files'):
-        fd = load_frame_data(path, K_override, dist_override)
+        fd = load_frame_data(path)
         per_frame_data.append(fd)
         all_betas.append(fd['betas'])
     all_betas_arr = np.array(all_betas)
 
-    # check calibration availability
-    has_calibration = np.any(per_frame_data[0]['camera_K'] != 0)
-    if not has_calibration:
-        print('\nWARNING: No camera calibration found in .npz files and no --calibration_npz provided.')
-        print('  Marker 3D estimation requires metric camera intrinsics.')
-        print('  Re-run inference with --calibration_npz, or pass --calibration_npz here.')
+    # check that .npz files were produced by the updated inference.py
+    has_virtual_cam = (
+        per_frame_data[0]['focal'][0] != 0
+        and per_frame_data[0]['vertices'].shape[0] > 0
+    )
+    if not has_virtual_cam:
+        print('\nWARNING: .npz files are missing focal/princpt/vertices fields.')
+        print('  These were produced by the old inference.py (before the marker update).')
+        print('  Re-run inference with the updated inference.py to enable marker measurements.')
         print('  All bands will fall back to joint-derived slice heights.\n')
 
     # aggregate marker positions in body-local frame
     aggregated_markers: dict[int, np.ndarray] = {}
     marker_stats: dict[int, dict] = {}
-    if has_calibration:
+    if has_virtual_cam:
         print('Aggregating marker positions in body-local frame...')
         aggregated_markers, marker_stats = aggregate_markers_in_body_frame(
             per_frame_data, garment_config
