@@ -34,9 +34,7 @@ python main/inference.py \
     --num_gpus 1 \
     --file_name $NAME \
     --ckpt_name $CKPT_NAME \
-    --end $END_COUNT \
-    --calibration_npz ../calib/p50pro_front_08.npz
-
+    --end $END_COUNT
 
 
 # convert frames to video
@@ -52,5 +50,5 @@ case "$EXT" in
         ;;
 esac
 
-rm -rf ./demo/input_frames
-rm -rf ./demo/output_frames
+# rm -rf ./demo/input_frames
+# rm -rf ./demo/output_frames
