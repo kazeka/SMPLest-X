@@ -1,0 +1,59 @@
+{
+  "garment_id": "v2",
+  "_comment": "ArUco marker layout for calibration garment v2. DICT_4X4_50. Body-coordinate convention: 'left'/'right' refer to the wearer's left/right. Three rows of three on front torso, matching three rows on back torso plus one nape marker, and two markers per sleeve (shoulder + wrist) visible from the front.",
+  "markers": {
+    "0":  {"band": "chest",      "position": "front_center",      "size_mm": 42},
+    "1":  {"band": "chest",      "position": "front_left",        "size_mm": 42},
+    "2":  {"band": "chest",      "position": "front_right",       "size_mm": 42},
+    "3":  {"band": "chest",      "position": "back_center",       "size_mm": 42},
+    "4":  {"band": "chest",      "position": "back_left",         "size_mm": 42},
+    "5":  {"band": "chest",      "position": "back_right",        "size_mm": 42},
+    "6":  {"band": "left_arm",   "position": "left_shoulder",     "size_mm": 42},
+    "7":  {"band": "left_arm",   "position": "left_wrist",        "size_mm": 42},
+    "8":  {"band": "right_arm",  "position": "right_shoulder",    "size_mm": 42},
+    "9":  {"band": "right_arm",  "position": "right_wrist",       "size_mm": 42},
+    "10": {"band": "nape",       "position": "back_center_nape",  "size_mm": 38},
+    "11": {"band": "waist",      "position": "back_center",       "size_mm": 38},
+    "14": {"band": "hips",       "position": "back_center",       "size_mm": 38},
+    "15": {"band": "waist",      "position": "front_center",      "size_mm": 38},
+    "16": {"band": "waist",      "position": "front_left",        "size_mm": 38},
+    "17": {"band": "waist",      "position": "back_right",        "size_mm": 38},
+    "18": {"band": "waist",      "position": "back_left",         "size_mm": 38},
+    "19": {"band": "waist",      "position": "front_right",       "size_mm": 38},
+    "24": {"band": "hips",       "position": "front_right",       "size_mm": 38},
+    "25": {"band": "hips",       "position": "front_center",      "size_mm": 38},
+    "26": {"band": "hips",       "position": "front_left",        "size_mm": 38},
+    "27": {"band": "hips",       "position": "back_left",         "size_mm": 38},
+    "28": {"band": "hips",       "position": "back_right",        "size_mm": 38}
+  },
+  "bands": {
+    "nape": {
+      "anatomical_level": "nape_of_neck",
+      "smplx_y_offset_metres": null,
+      "_comment": "Single marker at centre back of neck; no front counterpart"
+    },
+    "chest": {
+      "anatomical_level": "nipple_line",
+      "smplx_y_offset_metres": null,
+      "_comment": "Determined per-capture from detected marker Y in body-local frame"
+    },
+    "waist": {
+      "anatomical_level": "natural_waist_iliac_crest",
+      "smplx_y_offset_metres": null
+    },
+    "hips": {
+      "anatomical_level": "max_buttock_greater_trochanter",
+      "smplx_y_offset_metres": null
+    },
+    "left_arm": {
+      "anatomical_level": "left_sleeve_front_face",
+      "smplx_y_offset_metres": null,
+      "_comment": "Two markers on left sleeve, front-facing: shoulder joint level and wrist level"
+    },
+    "right_arm": {
+      "anatomical_level": "right_sleeve_front_face",
+      "smplx_y_offset_metres": null,
+      "_comment": "Two markers on right sleeve, front-facing: shoulder joint level and wrist level"
+    }
+  }
+}

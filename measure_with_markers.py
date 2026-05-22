@@ -27,6 +27,7 @@ import glob
 import json
 import os
 import sys
+from collections import defaultdict
 
 import cv2
 import numpy as np
@@ -41,6 +42,10 @@ from measure_bodies import (
     tpose_mesh,
 )
 
+
+# Bands that contribute to circumference measurements (same for v1 and v2).
+# Other bands (nape, left_arm, right_arm, …) are aggregated but not sliced.
+MEASUREMENT_BANDS = ('chest', 'waist', 'hips')
 
 # ---------------------------------------------------------------------------
 # Marker position recovery
@@ -90,7 +95,7 @@ def aggregate_markers_in_body_frame(
         aggregated: marker_id -> median position (3,) — only reliably detected markers
         stats:      marker_id -> {n_frames, std_mm, rejected}
     """
-    positions_per_id: dict[int, list[np.ndarray]] = {}
+    positions_per_id: defaultdict[int, list[np.ndarray]] = defaultdict(list)
 
     for frame_data in per_frame_data:
         ids           = frame_data['markers_ids']
@@ -118,7 +123,7 @@ def aggregate_markers_in_body_frame(
             centre_body = marker_body_local_from_mesh(
                 corners[idx], vertices, u_v, v_v, R_global, cam_trans
             )
-            positions_per_id.setdefault(mid, []).append(centre_body)
+            positions_per_id[mid].append(centre_body)
 
     aggregated: dict[int, np.ndarray] = {}
     stats: dict[int, dict] = {}
@@ -148,7 +153,7 @@ def slice_heights_from_markers(
     Returns None for bands with fewer than 2 detected markers.
     """
     band_y: dict[str, float | None] = {}
-    for band in ('chest', 'waist', 'hips'):
+    for band in MEASUREMENT_BANDS:
         ys = []
         for mid_str, m_info in garment_config['markers'].items():
             if m_info['band'] != band:
@@ -308,7 +313,7 @@ def main() -> None:
     # resolve final slice heights: markers where reliable, joints as fallback
     final_heights: dict[str, float] = {}
     height_sources: dict[str, str] = {}
-    for band in ('chest', 'waist', 'hips'):
+    for band in MEASUREMENT_BANDS:
         marker_y = band_y_markers.get(band)
         if marker_y is not None:
             final_heights[band] = marker_y
@@ -354,7 +359,7 @@ def main() -> None:
     emit('\n--- Slice heights (body-local Y, metres) ---')
     emit(f"  {'band':<8}  {'marker':<12}  {'joints':<12}  source")
     emit(f"  {'-'*8}  {'-'*12}  {'-'*12}  {'-'*6}")
-    for band in ('chest', 'waist', 'hips'):
+    for band in MEASUREMENT_BANDS:
         m_val = f"{band_y_markers[band]:.4f}" if band_y_markers[band] is not None else 'n/a'
         j_val = f"{joint_heights[band]:.4f}"
         src   = f"[{height_sources[band]}]"
@@ -362,17 +367,17 @@ def main() -> None:
 
     # --- marker reliability table ---
     emit('\n--- Marker reliability ---')
-    emit(f"  {'id':<6}  {'band':<8}  {'position':<14}  {'n_frames':<10}  {'std_mm':<10}  status")
-    emit(f"  {'-'*6}  {'-'*8}  {'-'*14}  {'-'*10}  {'-'*10}  {'-'*8}")
+    emit(f"  {'id':<6}  {'band':<10}  {'position':<20}  {'n_frames':<10}  {'std_mm':<10}  status")
+    emit(f"  {'-'*6}  {'-'*10}  {'-'*20}  {'-'*10}  {'-'*10}  {'-'*8}")
     for mid_str, m_info in sorted(garment_config['markers'].items(), key=lambda x: int(x[0])):
         mid = int(mid_str)
         if mid in marker_stats:
             s = marker_stats[mid]
             status = 'REJECTED' if s['rejected'] else 'ok'
-            emit(f"  {mid:<6}  {m_info['band']:<8}  {m_info['position']:<14}  "
+            emit(f"  {mid:<6}  {m_info['band']:<10}  {m_info['position']:<20}  "
                  f"{s['n_frames']:<10}  {s['std_mm']:<10.1f}  {status}")
         else:
-            emit(f"  {mid:<6}  {m_info['band']:<8}  {m_info['position']:<14}  "
+            emit(f"  {mid:<6}  {m_info['band']:<10}  {m_info['position']:<20}  "
                  f"{'0':<10}  {'n/a':<10}  not detected")
 
     # --- final measurements ---
